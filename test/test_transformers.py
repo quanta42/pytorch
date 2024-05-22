@@ -2465,7 +2465,9 @@ class TestSDPACudaOnly(NNTestCase):
         value = value.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
         key = key.view(batch_size, -1, num_heads, head_dim).transpose(1, 2)
 
-        if PLATFORM_SUPPORTS_FLASH_ATTENTION:
+        if PLATFORM_SUPPORTS_CUDNN_ATTENTION:
+            assert torch._fused_sdp_choice(query, key, value) == SDPBackend.CUDNN_ATTENTION.value
+        elif PLATFORM_SUPPORTS_FLASH_ATTENTION:
             assert torch._fused_sdp_choice(query, key, value) == SDPBackend.FLASH_ATTENTION.value
         else:
             assert torch._fused_sdp_choice(query, key, value) == SDPBackend.EFFICIENT_ATTENTION.value
@@ -3203,7 +3205,7 @@ class TestSDPACudaOnly(NNTestCase):
                 query_expanded.contiguous(), key_expanded.contiguous(), value_expanded.contiguous(),
                 attn_mask=None, dropout_p=0.0, is_causal=False)
 
-        self.assertEqual(actual.contiguous(), math_ref.contiguous().to(dtype), atol=1.5e-3, rtol=1e-2)
+        self.assertEqual(actual.contiguous(), math_ref.contiguous().to(dtype), atol=1e-3, rtol=1e-2)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_MEM_EFF_ATTENTION, "Fused SDPA was not built for this system")
     def test_fused_kernels_nested_broadcasting_query_dense(self, device):
