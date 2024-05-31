@@ -783,7 +783,6 @@ cc_library(
         ":torch_headers",
         "//caffe2/proto:torch_cc_proto",
         "@kineto",
-        "@cpp-httplib",
     ] + if_cuda([
         "@cuda//:nvToolsExt",
         "@cutlass",
