@@ -1493,7 +1493,15 @@ class CppWrapperCpu(WrapperCodeGen):
         else:
             return DTYPE_TO_ATEN[dtype]
 
-    @functools.lru_cache(None)
+    def codegen_layout(self, layout):
+        if config.abi_compatible:
+            layout_str = str(layout).split(".")[-1]
+            self.used_cached_layouts.add(layout_str)
+            return f"cached_torch_layout_{layout_str}"
+        else:
+            return LAYOUT_TO_ATEN[layout]
+
+    @functools.lru_cache(None)  # noqa: B019
     def codegen_int_array_var(
         self,
         int_array: str,
