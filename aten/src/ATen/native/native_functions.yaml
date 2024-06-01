@@ -1233,12 +1233,24 @@
     CompositeExplicitAutograd: copysign_out
   tags: pointwise
 
+# This function is only used for testing COW (Copy-on-Write) behavior.
+# If `torch.get_future_lazy_clone() == False`, the output is a view of the input, but
+# COW behavior is simulated. Otherwise, the output is a semantic copy of the
+# input, but it is a COW tensor, and any aliases of the tensor are also
+# converted to COW tensors.
 - func: _lazy_clone(Tensor self) -> Tensor
-  # Like clone, but the copy takes place lazily, only if either the
-  # input or the output are written.
   variants: function, method
   dispatch:
     CompositeExplicitAutograd: _lazy_clone
+
+# This function applies COW (if `torch.get_future_lazy_clone() == True`) or
+# simulated COW behavior (if `torch.get_future_lazy_clone() == False`) to the
+# input. It should be called on the output of any operator that currently
+# conditionally returns either a view or a copy of the input, in cases where a
+# view is returned, in order to deprecate the conditional view and enable future
+# lazy clone behavior.
+- func: _apply_cow_(Tensor(a!) self) -> Tensor(a!)
+  variants: method
 
 - func: logical_not(Tensor self) -> Tensor
   device_check: NoCheck   # TensorIterator
