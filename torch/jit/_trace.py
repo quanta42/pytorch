@@ -802,7 +802,10 @@ def trace(
         return func
     if optimize is not None:
         warnings.warn(
-            "`optimize` is deprecated and has no effect. Use `with torch.jit.optimized_execution() instead"
+            "`optimize` is deprecated and has no effect. "
+            "Use `with torch.jit.optimized_execution()` instead",
+            FutureWarning,
+            stacklevel=2,
         )
 
     log_torchscript_usage("trace")
@@ -1029,7 +1032,10 @@ def trace_module(
         return mod
     if optimize is not None:
         warnings.warn(
-            "`optimize` is deprecated and has no effect. Use `with torch.jit.optimized_execution() instead"
+            "`optimize` is deprecated and has no effect. "
+            "Use `with torch.jit.optimized_execution()` instead",
+            FutureWarning,
+            stacklevel=2,
         )
 
     var_lookup_fn = _create_interpreter_name_lookup_fn(0)
