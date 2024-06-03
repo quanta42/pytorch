@@ -13,7 +13,7 @@ bash %INSTALLER_DIR%\tmp.sh
 if errorlevel 1 exit /b
 if not errorlevel 0 exit /b
 
-rm -rf %INSTALLER_DIR%\tmp.sh
-rm -rf %INSTALLER_DIR%\tmp.bat
+rm %INSTALLER_DIR%\tmp.sh
+rm %INSTALLER_DIR%\tmp.bat
 
 FOR /F "tokens=*" %%i in ('type tmp.txt') do SET %%i
