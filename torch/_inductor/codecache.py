@@ -66,8 +66,8 @@ from torch._inductor.runtime.compile_tasks import (
     _set_triton_ptxas_path,
     _worker_compile_triton,
 )
-from torch._inductor.runtime.hints import HalideMeta
-from torch._inductor.runtime.runtime_utils import cache_dir
+from torch._inductor.runtime.hints import HalideInputSpec, HalideMeta
+from torch._inductor.runtime.runtime_utils import cache_dir, default_cache_dir
 from torch._inductor.utils import clear_on_fresh_inductor_cache, is_linux
 
 from torch._logging import trace_structured
@@ -2472,6 +2472,12 @@ class CppPythonBindingsCodeCache(CppCodeCache):
                 [[unlikely]] throw std::runtime_error("expected int arg");
             return result;
         }
+        template <> inline uintptr_t parse_arg<uintptr_t>(PyObject* args, size_t n) {
+            auto result = PyLong_AsVoidPtr(PyTuple_GET_ITEM(args, n));
+            if(result == reinterpret_cast<void*>(-1) && PyErr_Occurred())
+                [[unlikely]] throw std::runtime_error("expected int arg");
+            return reinterpret_cast<uintptr_t>(result);
+        }
 
         %s
 
@@ -2653,41 +2659,102 @@ class CppWrapperCodeCache(CppPythonBindingsCodeCache):
 class HalideCodeCache(CppPythonBindingsCodeCache):
     cache: Dict[str, Callable[[], Union[ModuleType, CDLL]]] = {}
     cache_clear = staticmethod(cache.clear)
-    glue_template = textwrap.dedent(
+    _standalone_runtime_path: Optional[str] = None
+    glue_template_cpp = textwrap.dedent(
         """
-        #include "{halidebuffer_h}"
+        #include "{halideruntime_h}"
         #include "{headerfile}"
         #include <stdexcept>
         #include <cmath>
+
         void kernel({argdefs}) {{
             {buffers}
             int err = halide_kernel({buffer_names});
-            if(err != 0) {{
-                throw std::runtime_error("halide_kernel failed");
-            }}
+            if(err != 0) throw std::runtime_error("halide_kernel failed");
+        }}
+        """
+    )
+    glue_template_cuda = textwrap.dedent(
+        """
+        #include "{halideruntime_h}"
+        #include "{headerfile}"
+        #include <stdexcept>
+        #include <cmath>
+        #include <cuda.h>
+        struct UserContext {{ int device_id; CUcontext *cuda_context; CUstream *stream; }};
+
+        void kernel({argdefs}, uintptr_t stream) {{
+            const halide_device_interface_t* cuda_interface = halide_cuda_device_interface();
+            CUcontext _ctx = 0;
+            if(cuCtxGetCurrent(&_ctx) != 0) throw std::runtime_error("Could not acquire CUDA context");
+            CUstream _stream = reinterpret_cast<CUstream>(stream);
+            UserContext user_context = {{{cuda_device}, &_ctx, &_stream}};
+            {buffers}
+            int err = halide_kernel(&user_context, {buffer_names});
+            if(err != 0) throw std::runtime_error("halide_kernel failed");
         }}
         """
     )
 
     @classmethod
-    def _codegen_glue(cls, argtypes, headerfile):
+    def _codegen_buffer(cls, name: str, arg: HalideInputSpec, cuda: bool):
+        if cuda:
+            device = f"reinterpret_cast<uint64_t>({arg.name})"
+            device_interface = "cuda_interface"
+            host = "nullptr"
+            flags = "halide_buffer_flag_device_dirty"
+        else:
+            device = "0"
+            device_interface = "nullptr"
+            host = f"reinterpret_cast<uint8_t*>({arg.name})"
+            flags = "halide_buffer_flag_host_dirty"
+
+        numel = "1"
+        dims = []
+        assert arg.shape
+        for s in arg.shape:
+            dims.append(f"halide_dimension_t(0, {s}, {numel})")
+            numel = f"{numel}*({s})"  # column major (opposite of pytorch)
+
+        return [
+            f"halide_buffer_t {name};",
+            f"halide_dimension_t {name}_dims[] = {{{', '.join(dims)}}};",
+            f"{name}.device = {device};",
+            f"{name}.device_interface = {device_interface};",
+            f"{name}.host = {host};",
+            f"{name}.flags = {flags};",
+            f"{name}.type = {arg.halide_type()};",
+            f"{name}.dimensions = {len(dims)};",
+            f"{name}.dim = {name}_dims;",
+            f"{name}.padding = nullptr;",
+        ]
+
+    @classmethod
+    def _codegen_glue(cls, meta, headerfile):
+        is_cuda = meta.is_cuda()
+        assert is_cuda is ("user_context" in meta.target)
+        assert "no_runtime" in meta.target
         buffers = []
         buffer_names = []
-        for i, arg in enumerate(argtypes):
-            if arg.numel:
-                buffer_names.append(f"hl_buf_{i}")
-                buffers.append(
-                    f"    Halide::Runtime::Buffer {buffer_names[-1]}({arg.halide_type()}, {arg.name}, {arg.numel});"
-                )
+        for i, arg in enumerate(meta.argtypes):
+            if arg.is_buffer():
+                buffer_names.append(f"&hl_buf_{i}")
+                buffers.extend(cls._codegen_buffer(f"hl_buf_{i}", arg, is_cuda))
             else:
                 assert "*" not in arg.ctype
                 buffer_names.append(arg.name)
-        glue_code = cls.glue_template.format(
-            halidebuffer_h=cls.find_header("HalideBuffer.h"),
+        buffers = "\n".join([f"    {line}" for line in buffers]).lstrip()
+
+        glue_template = cls.glue_template_cuda if is_cuda else cls.glue_template_cpp
+        glue_code = glue_template.format(
+            halideruntime_h=cls.find_header(
+                "HalideRuntimeCuda.h" if is_cuda else "HalideRuntime.h"
+            ),
             headerfile=headerfile,
-            argdefs=", ".join(f"{a.bindings_type()} {a.name}" for a in argtypes),
-            buffers="\n".join(buffers).lstrip(),
+            argdefs=", ".join(f"{a.bindings_type()} {a.name}" for a in meta.argtypes),
+            buffers=buffers,
             buffer_names=", ".join(buffer_names),
+            cuda_device=meta.cuda_device,
         )
         return glue_code
 
@@ -2697,7 +2764,8 @@ class HalideCodeCache(CppPythonBindingsCodeCache):
         return sha256_hash(
             "\n".join(
                 [
-                    cls.glue_template,
+                    cls.glue_template_cpp,
+                    cls.glue_template_cuda,
                     f"{cls.cpu_cache_size()}",
                     cpp_compile_command("I", "O"),
                 ]
@@ -2793,7 +2861,6 @@ class HalideCodeCache(CppPythonBindingsCodeCache):
         lockfile = str(dirpath / "lock")
         need_compile = not os.path.exists(donefile)
         jobs = []
-
         if need_compile:
             write_atomic(genfile, source_code)
             jobs.append(
@@ -2809,7 +2876,7 @@ class HalideCodeCache(CppPythonBindingsCodeCache):
                         "-f",
                         "halide_kernel",
                         "-e",
-                        "static_library,h,schedule,pytorch_wrapper",
+                        "static_library,h,schedule",
                         "-p",
                         cls.find_libautoschedule(meta.scheduler),
                         *meta.args(),
@@ -2817,11 +2884,15 @@ class HalideCodeCache(CppPythonBindingsCodeCache):
                 )
             )
 
+        binding_types = [arg.bindings_type() for arg in meta.argtypes]
+        if meta.is_cuda():
+            binding_types.append("uintptr_t")  # stream
         bindings_future = cls.load_pybinding_async(
-            [arg.bindings_type() for arg in meta.argtypes],
-            cls._codegen_glue(meta.argtypes, headerfile),
-            extra_flags=(libfile,),
+            binding_types,
+            cls._codegen_glue(meta, headerfile),
+            extra_flags=(libfile, cls.build_standalone_runtime()),
             submit_fn=jobs.append if need_compile else None,
+            cuda=meta.is_cuda(),
         )
 
         if need_compile:
@@ -2843,13 +2914,82 @@ class HalideCodeCache(CppPythonBindingsCodeCache):
     def generate_halide(cls, *args, **kwargs):
         return cls.generate_halide_async(*args, **kwargs)()
 
+    @classmethod
+    def build_standalone_runtime(cls):
+        if cls._standalone_runtime_path and os.path.exists(
+            cls._standalone_runtime_path
+        ):
+            return cls._standalone_runtime_path
+        is_cuda = torch.cuda.is_available()
+        libname = "libStandaloneHalideRuntime.so"
+        target = "host-cuda" if is_cuda else "host"
+        if cls._standalone_runtime_path:
+            assert not os.path.exists(cls._standalone_runtime_path)
+            # We hit this case in unittests when we run with fresh_inductor_cache()
+            # Generating a fresh runtime over and over causes errors because we initialize
+            # cuda hundreds of times in the same process and run out of file descriptors.
+            # Workaround by jail breaking the current fresh_inductor_cache().
+            base = default_cache_dir()
+        else:
+            base = cache_dir()
+        dirpath = Path(base) / f"halide-runtime-{target}"
+        os.makedirs(dirpath, exist_ok=True)
+        donefile = str(dirpath / "done")
+        lockfile = str(dirpath / "lock")
+        afile = str(dirpath / "standalone_halide_runtime.a")
+        sofile = str(dirpath / libname)
+        if not os.path.exists(donefile):
+            import filelock
+            import halide as hl  # type: ignore[import-untyped]
+
+            with filelock.FileLock(lockfile, LOCK_TIMEOUT):
+                if not os.path.exists(donefile):
+                    hl.compile_standalone_runtime(afile, hl.Target(target))
+                    subprocess.check_call(
+                        shlex.split(cpp_compile_command(afile, sofile, cuda=is_cuda))
+                    )
+                    touch(donefile)
+        assert os.path.exists(sofile)
+        cls._standalone_runtime_path = sofile
+        return sofile
+
 
 def _worker_task_halide(lockfile, jobs):
     from filelock import FileLock
 
-    with FileLock(lockfile, LOCK_TIMEOUT):
-        for job in jobs:
-            job()
+    try:
+        with FileLock(lockfile, LOCK_TIMEOUT):
+            for job in jobs:
+                job()
+    except subprocess.SubprocessError as e:
+        if os.environ.get("HALIDE_REPRO") == "1":
+            python, script, *cmd = getattr(e, "cmd", ("", "", ""))
+            if os.path.basename(python).startswith("python"):
+                code = open(script).read()
+                main = "    hl.main()"
+                assert code.count(main) == 1
+
+                class Out:
+                    def __repr__(self):
+                        return "out"
+
+                cmd[cmd.index("-o") + 1] = Out()  # type: ignore[call-overload]
+                repl = textwrap.indent(
+                    textwrap.dedent(
+                        f"""\
+                        import sys, tempfile
+                        with tempfile.TemporaryDirectory() as out:
+                            sys.argv = {["repro.py", *cmd]!r}
+                            hl.main()
+                        """
+                    ),
+                    "    ",
+                )
+                code = code.replace(main, repl)
+                with open("repro.py", "w") as fd:
+                    fd.write(code.lstrip())
+                raise RuntimeError(f"wrote repro.py: {e}") from e
+        raise
 
 
 def touch(filename):

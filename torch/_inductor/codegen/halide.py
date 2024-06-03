@@ -15,7 +15,7 @@ from ...utils._sympy.value_ranges import ValueRanges
 from .. import config, ir
 from ..codecache import HalideCodeCache
 from ..metrics import is_metric_table_enabled, log_kernel_metadata
-from ..ops_handler import ReductionType, StoreMode
+from ..ops_handler import MockHandler, ReductionType, StoreMode
 
 from ..runtime.hints import HalideInputSpec, HalideMeta, ReductionHint
 from ..utils import (
@@ -28,6 +28,7 @@ from ..utils import (
 )
 from ..virtualized import _ops as ops, OpsHandler, V
 from .common import (
+    BackendFeature,
     CSEVariable,
     DeferredLine,
     IndentedBuffer,
@@ -797,13 +798,19 @@ class HalideKernel(SIMDKernel):
         """Codegen a reduction operation"""
         assert self.inside_reduction
         assert not self._load_mask
-        assert isinstance(value, HalideCSEVariable) and value.used_dims is not None
 
         cache_key = (src_dtype, reduction_type, value)
         if cache_key in self.cse.reduction_cache:
             return self.cse.reduction_cache[cache_key]
 
-        acc_type = halide_acc_type(dtype)
+        if isinstance(value, tuple):
+            assert reduction_type == "welford_combine"
+            self.cse.reduction_cache[
+                cache_key
+            ] = result_tuple = self.welford_combine_impl(*value)
+            return result_tuple
+
+        assert isinstance(value, HalideCSEVariable) and value.used_dims is not None
         result_var = self.newfunc(
             [
                 tree.name
@@ -811,12 +818,11 @@ class HalideKernel(SIMDKernel):
                 if tree.name in value.used_dims
             ]
         )
-
-        default = ir.Reduction.default_accumulator(reduction_type, src_dtype)
-
         if value.used_dims[-1] != "rindex":
             value = self.genfunc(f"{value}", [*value.used_dims, "rindex"])
         value_str = value.reduction_str()
+        default = ir.Reduction.default_accumulator(reduction_type, src_dtype)
+        acc_type = halide_acc_type(dtype)
 
         if reduction_type in ("argmax", "argmin"):
             self.body.writeline(
@@ -848,6 +854,113 @@ class HalideKernel(SIMDKernel):
 
         self.cse.reduction_cache[cache_key] = result_var
         return result_var
+
+    def welford_combine_impl(self, mean, m2, weight):
+        assert isinstance(mean, HalideCSEVariable) and mean.used_dims is not None
+        assert isinstance(m2, HalideCSEVariable) and m2.used_dims is not None
+        assert isinstance(weight, HalideCSEVariable) and weight.used_dims is not None
+        used_dims = set(mean.used_dims) | set(m2.used_dims) | set(weight.used_dims)
+        result_var = self.newfunc(
+            [tree.name for tree in self.range_trees[:-1] if tree.name in used_dims]
+        )
+        default = [f"hl.cast({x.name}.type(), 0)" for x in (mean, m2, weight)]
+        pfx = result_var.name
+        self.body.writeline(f"{result_var} = hl.Tuple([{', '.join(default)}])")
+        self.body.writeline(f"{pfx}_mean_1 = {result_var}[0]")
+        self.body.writeline(f"{pfx}_m2_1 = {result_var}[1]")
+        self.body.writeline(f"{pfx}_weight_1 = {result_var}[2]")
+        self.body.writeline(f"{pfx}_mean_2 = {mean.reduction_str()}")
+        self.body.writeline(f"{pfx}_m2_2 = {m2.reduction_str()}")
+        self.body.writeline(f"{pfx}_weight_2 = {weight.reduction_str()}")
+        self.body.writeline(f"{pfx}_delta = {pfx}_mean_2 - {pfx}_mean_1")
+        self.body.writeline(f"{pfx}_new_weight = {pfx}_weight_1 + {pfx}_weight_2")
+        self.body.writeline(
+            f"{pfx}_w2_over_w = hl.select({pfx}_new_weight == 0.0, 0.0, {pfx}_weight_2 / {pfx}_new_weight)"
+        )
+        update = [
+            f"{pfx}_mean_1 + {pfx}_delta * {pfx}_w2_over_w",
+            f"{pfx}_m2_1 + {pfx}_m2_2 + {pfx}_delta * {pfx}_delta * {pfx}_weight_1 * {pfx}_w2_over_w",
+            f"{pfx}_new_weight",
+        ]
+        self.body.writeline(f"{result_var} = hl.Tuple([{', '.join(update)}])")
+
+        unpacked = []
+        for i in range(3):
+            unpacked.append(self.newfunc(result_var.used_dims))
+            self.body.writeline(f"{unpacked[-1]} = {result_var}[{i}]")
+        return tuple(unpacked)
+
+    def scan(
+        self,
+        dtypes: Tuple[torch.dtype, ...],
+        combine_fn: Callable[
+            [Tuple[CSEVariable, ...], Tuple[CSEVariable, ...]], Tuple[CSEVariable, ...]
+        ],
+        values_orig: Tuple[CSEVariable, ...],
+    ) -> Tuple[CSEVariable, ...]:
+        assert self.inside_reduction
+        assert len(dtypes) == len(values_orig)
+        values: List[HalideCSEVariable] = []
+        all_used_dims = set()
+        for value in values_orig:
+            assert isinstance(value, HalideCSEVariable) and value.used_dims is not None
+            if value.used_dims and value.used_dims[-1] == "rindex":
+                values.append(value)
+            else:
+                values.append(self.genfunc(f"{value}", [*value.used_dims, "rindex"]))
+            all_used_dims.update(value.used_dims)
+        used_dims = [
+            tree.name for tree in self.range_trees if tree.name in all_used_dims
+        ]
+        result_var = self.newfunc(used_dims)
+        assert result_var.used_dims and result_var.used_dims[-1] == "rindex"
+        prefix = result_var.used_dims[:-1]
+        initial = [
+            f"hl.cast({halide_acc_type(dtype)}, {value})"
+            for dtype, value in zip(dtypes, values)
+        ]
+
+        length = self.kexpr(self.rename_indexing(self.range_trees[-1].numel))
+        scan_dom = self.genfunc(f"hl.RDom([hl.Range(1, {length})])", [])
+        scan = f"{scan_dom}.x"
+
+        if len(values) == 1:
+
+            def maybe_tuple(x):
+                return x[0]
+
+            read_left = [result_var.index_str([*prefix, f"{scan} - 1"])]
+            read_right = [result_var.index_str([*prefix, scan])]
+        else:
+
+            def maybe_tuple(x):
+                return f"hl.Tuple([{', '.join(x)}])"
+
+            read_left = [
+                result_var.index_str([*prefix, f"{scan} - 1"]) + f"[{i}]"
+                for i in range(len(values))
+            ]
+            read_right = [
+                result_var.index_str([*prefix, scan]) + f"[{i}]"
+                for i in range(len(values))
+            ]
+
+        self.body.writeline(f"{result_var} = {maybe_tuple(initial)}")
+
+        # Disable CSE for update fn
+        with V.set_ops_handler(HalideOverrides(MockHandler())):
+            combine_str = combine_fn(read_left, read_right)  # type: ignore[arg-type]
+        self.body.writeline(
+            f"{result_var.index_str([*prefix, scan])} = {maybe_tuple(combine_str)}"
+        )
+
+        if len(values) == 1:
+            return (result_var,)
+
+        unpack_vars = [self.newfunc(used_dims) for _ in values]
+        for i, v in enumerate(unpack_vars):
+            self.body.writeline(f"{v} = {result_var}[{i}]")
+        return tuple(unpack_vars)
 
     def genfunc(
         self, line, used_dims, *, bounds=ValueRanges.unknown()
@@ -894,30 +1007,72 @@ class HalideKernel(SIMDKernel):
         argtypes = []
         for _, arg in self.halide_argdefs():
             if isinstance(arg, SizeArg):
-                numel = None
+                shape = None
                 dtype = "long"
             else:
                 if arg.buffer in self.store_buffer_dimensions and "out" in arg.name:
-                    numel = ", ".join(
+                    shape = [
                         cexpr(self.rename_indexing(x))
                         for x in self.store_buffer_dimensions[arg.buffer]
-                    )
+                    ]
                 else:
-                    numel = cexpr(
-                        self.rename_indexing(self.halide_buffer_numel(arg.buffer))
-                    )
+                    shape = [
+                        cexpr(
+                            self.rename_indexing(self.halide_buffer_numel(arg.buffer))
+                        )
+                    ]
                 dtype = f"{DTYPE_TO_CPP[arg.dtype]}*"
             argtypes.append(
                 HalideInputSpec(
                     dtype,
                     arg.name,
-                    numel,
+                    shape,
                 )
             )
-        target = ["host", "strict_float"]
-        # TODO(jansel): for cuda want target="host-cuda-cuda_capability_86-user_context"
+
+        current_device = V.graph.scheduler.get_current_device_or_throw()
+        if current_device.type == "cpu":
+            target = [config.halide.cpu_target]
+            schduler = config.halide.scheduler_cpu
+            scheduler_flags = {
+                "parallelism": parallel_num_threads(),
+            }
+            if config.halide.scheduler_cpu == "Mullapudi2016":
+                scheduler_flags[
+                    "last_level_cache_size"
+                ] = HalideCodeCache.cpu_cache_size()
+            cuda_device = None
+        else:
+            assert current_device.type == "cuda", "only cpu/cuda supported"
+            assert current_device.index <= 0, "only default device supported"
+            target = [config.halide.gpu_target]
+            schduler = config.halide.scheduler_cuda
+            capability = torch.cuda.get_device_properties(current_device)
+            if "cuda_capability" not in target[0]:
+                for major, minor in [(8, 6), (8, 0), (7, 5), (7, 0), (6, 1)]:
+                    if capability.major >= major and capability.minor >= minor:
+                        target.append(f"cuda_capability_{major}{minor}")
+                        break
+            target.append("user_context")
+            scheduler_flags = {
+                "parallelism": capability.multi_processor_count,
+                # TODO(jansel): explore other flags, see:
+                # grep parser.parse ~/Halide/src/autoschedulers/anderson2021/AutoSchedule.cpp
+            }
+            cuda_device = max(0, current_device.index)
+
+        # strict_float is requires for correctness
+        target.append("strict_float")
+
+        # without this we will initialize cuda once per kernel and hit errors
+        target.append("no_runtime")
+
         if not config.halide.asserts:
             target.append("no_asserts")
+
+        if config.halide.debug:
+            target.append("debug")
+
         if "64" in self.index_dtype:
             # TODO(jansel): it is unclear if this does anything, since input sizes are still int32
             target.append("large_buffers")
@@ -925,18 +1080,16 @@ class HalideKernel(SIMDKernel):
         return HalideMeta(
             argtypes,
             target="-".join(target),
-            scheduler="Mullapudi2016",
-            scheduler_flags={
-                "parallelism": parallel_num_threads(),
-                "last_level_cache_size": HalideCodeCache.cpu_cache_size(),
-            },
+            scheduler=schduler,
+            scheduler_flags=scheduler_flags,
+            cuda_device=cuda_device,
         )
 
     def codegen_kernel(self, name=None):
         """Called at the end to generate a final kernel string"""
         if self.args.inplace_buffers:
             raise Unsupported("inplace_buffers")
-        self.halide_kernel_meta()  # ensure needed args are added
+        meta = self.halide_kernel_meta()  # ensure needed args are added early
         code = IndentedBuffer()
         code.splice(
             """
@@ -1025,25 +1178,47 @@ class HalideKernel(SIMDKernel):
                     hints = V.graph.sizevars.size_hints(
                         [V.graph.get_numel(arg.buffer)], fallback=1
                     )
+                if (
+                    config.halide.scheduler_cuda == "Anderson2021"
+                    and V.graph.scheduler.get_current_device_or_throw().type == "cuda"
+                ):
+                    hints = tuple(
+                        map(self._anderson2021_autoscheduler_workarounds, hints)
+                    )
                 range_hints = [f"hl.Range(0, {hint})" for hint in hints]
                 code.writeline(f"{arg.name}.set_estimates([{', '.join(range_hints)}])")
 
         code.do_unindent(2)
         code.splice(
-            """
+            f"""
             if __name__ == "__main__":
                 hl.main()
+            else:
+                with hl.GeneratorContext(
+                    hl.Target({meta.target!r}),
+                    hl.AutoschedulerParams({meta.scheduler!r}, {meta.scheduler_flags!r}
+                )):
+                    kernel = Kernel().compile_to_callable()
             """
         )
         return code.getvalue()
+
+    @staticmethod
+    def _anderson2021_autoscheduler_workarounds(n):
+        # workaround https://github.com/halide/Halide/issues/8246
+        n = max(2, n)
+        # workaround https://github.com/halide/Halide/issues/8252
+        # n = min(100000, n)
+        return n
 
     def call_kernel(self, name: str, node=None):
         """Codegen a call to this kernel"""
         wrapper = V.graph.wrapper_code
         call_args = [f"{n}" for n, _ in self.halide_argdefs()]
-        assert V.graph.scheduler.current_device is not None
-        current_device = V.graph.scheduler.current_device
-        assert current_device.type == "cpu", "TODO"
+        current_device = V.graph.scheduler.get_current_device_or_throw()
+        if current_device.type == "cuda":
+            stream_name = wrapper.write_get_raw_stream(current_device.index, V.graph)
+            call_args.append(stream_name)
         wrapper.generate_kernel_call(
             name,
             call_args,
@@ -1064,6 +1239,30 @@ class HalideScheduling(SIMDScheduling):
     # TODO(jansel): Halide doesn't actually support 64 bit indexing...
     int64_type = "hl.Int(64)"
     kernel_type = HalideKernel
+    backend_features = dict.fromkeys(
+        [
+            BackendFeature.SCAN,
+            BackendFeature.TUPLE_REDUCTION,
+        ]
+    )
+    backend_features_cpu = dict.fromkeys(
+        [
+            *backend_features,
+        ]
+    )
+    backend_features_cuda = dict.fromkeys(
+        [
+            *backend_features,
+        ]
+    )
+
+    @classmethod
+    def get_backend_features(cls, device: torch.device):
+        if device.type == "cpu":
+            return cls.backend_features_cpu
+        if device.type == "cuda":
+            return cls.backend_features_cuda
+        raise NotImplementedError(device.type)
 
     def define_kernel(self, src_code, node_schedule, kernel):
         """Codegen kernel definition to go in output wrapper code"""

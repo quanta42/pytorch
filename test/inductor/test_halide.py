@@ -40,12 +40,12 @@ class HalideTests(TestCase):
         fn = HalideCodeCache.generate_halide(
             HalideMeta(
                 argtypes=[
-                    HalideInputSpec(ctype="float*", name="in_ptr0", numel="1024L"),
-                    HalideInputSpec(ctype="float*", name="in_ptr1", numel="1024L"),
+                    HalideInputSpec(ctype="float*", name="in_ptr0", shape=["1024L"]),
+                    HalideInputSpec(ctype="float*", name="in_ptr1", shape=["1024L"]),
                     HalideInputSpec(
                         ctype="float*",
                         name="out_ptr0",
-                        numel="1024L",
+                        shape=["1024L"],
                     ),
                 ],
                 target="host",

@@ -62,7 +62,7 @@ nan_asserts = os.environ.get("TORCHINDUCTOR_NAN_ASSERTS") == "1"
 pick_loop_orders = True
 
 # reuse a kernel input as the output
-inplace_buffers = True
+inplace_buffers = False
 
 # reuse a buffer for an unrelated purpose
 allow_buffer_reuse = True
@@ -317,7 +317,7 @@ realize_opcount_threshold = 30
 realize_acc_reads_threshold = 8
 
 # fallback to eager for random/dropout, this is slow but useful for debugging
-fallback_random = False
+fallback_random = True
 
 # automatically create fallbacks when encountering an unhandled op
 implicit_fallbacks = True
@@ -835,12 +835,29 @@ class cuda:
 
 
 # Backend to use for CPU codegen either "cpp" or "halide" (experimental)
-cpu_backend = "cpp"
+cpu_backend = "halide"
+
+# Backend to use for CUDA codegen either "triton" or "halide" (experimental)
+cuda_backend = "halide"
 
 
 class halide:
+    # Base halide target to use for CPU devices
+    cpu_target = "host"
+
+    # Base halide target to use for CUDA devices
+    gpu_target = "host-cuda"
+
+    # Halide autoscheduler to use, choices are:
+    # "Anderson2021" (gpu-only), "Li2018", "Adams2019" (cpu-only), or "Mullapudi2016" (cpu-only)
+    scheduler_cuda = "Anderson2021"
+    scheduler_cpu = "Adams2019"
+
     # Controls `no_asserts` flag passed to Halide target (warning: can false positive)
     asserts = False
+
+    # Controls `debug` flag passed to Halide target
+    debug = False
 
 
 # create a directory containing lots of debug information
