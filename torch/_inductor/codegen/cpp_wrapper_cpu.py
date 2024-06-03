@@ -15,7 +15,7 @@ import torch._ops
 from torch.fx.experimental.symbolic_shapes import ConvertIntKey, DivideByKey
 from .. import config, ir
 from ..codecache import CudaKernelParamCache
-from ..utils import cache_on_self, sympy_product
+from ..utils import _align, ALIGN_BYTES, cache_on_self, sympy_product
 from ..virtualized import V
 from .aoti_hipify_utils import maybe_hipify_code_wrapper
 from .common import IndentedBuffer
@@ -238,8 +238,6 @@ class CppWrapperCpu(WrapperCodeGen):
                 };
                 """
             )
-
-        from .memory_planning import ALIGN_BYTES
 
         # Round up to the nearest multiple of ALIGN_BYTES
         # ALIGN_BYTES must be a power of 2
@@ -731,14 +729,19 @@ class CppWrapperCpu(WrapperCodeGen):
                 self.prefix.writeline(
                     f"constants_info_[{idx}].offset = {tensor.storage_offset()};"
                 )
-                if tensor.is_mkldnn:
-                    self.prefix.writeline(
-                        f"constants_info_[{idx}].data_size = {torch.ops.mkldnn._nbytes(tensor)};"
-                    )
-                else:
-                    self.prefix.writeline(
-                        f"constants_info_[{idx}].data_size = {tensor.untyped_storage().nbytes()};"
-                    )
+
+                # For data_size, we always align it to 64.
+                # When loading the constants, the valid data will depends on the size
+                # not the data_size so there won't be correctness issue.
+                data_size = (
+                    torch.ops.mkldnn._nbytes(tensor)
+                    if tensor.is_mkldnn
+                    else tensor.untyped_storage().nbytes()
+                )
+                self.prefix.writeline(
+                    f"constants_info_[{idx}].data_size = {_align(data_size)};"
+                )
+
                 from_folded = "true" if name in V.graph.folded_constants else "false"
                 self.prefix.writeline(
                     f"constants_info_[{idx}].from_folded = {from_folded};"
