@@ -2,7 +2,7 @@
   echo #!/bin/bash
   echo export INSTALLER_DIR="$SCRIPT_HELPERS_DIR"/installation-helpers
   echo source "$INSTALLER_DIR"/activate_miniconda3.sh
-  echo "tmp.bat"
+  echo "%INSTALLER_DIR%\tmp.bat"
 ) > %INSTALLER_DIR%\tmp.sh
 
 (
