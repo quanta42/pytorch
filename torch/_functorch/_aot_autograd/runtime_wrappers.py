@@ -587,7 +587,11 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
         @wraps(compiled_fn)
         def inner_fn(args: List[Any]):
             unwrapped_args = unwrap_tensor_subclasses(
-                args, is_joint_structure=self.trace_joint
+                args,
+                subclass_metas=runtime_metadata.subclass_inp_meta,
+                is_joint_structure=self.trace_joint,
+                is_runtime=True,
+                append_extra=True,
             )
             args.clear()
             # expectation: runtime_fn is a boxed fn
@@ -1730,7 +1734,10 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                     len_tangents = len(
                         unwrap_tensor_subclasses(
                             all_args[tangents_start_idx:tangents_end_idx],
+                            subclass_metas=None,
                             is_joint_structure=False,
+                            is_runtime=False,
+                            append_extra=False,
                         )
                     )
                     all_args = [
@@ -1745,7 +1752,11 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                         for i, t in enumerate(all_args)
                     ]
                     all_args = unwrap_tensor_subclasses(
-                        all_args, is_joint_structure=False
+                        all_args,
+                        subclass_metas=None,
+                        is_joint_structure=False,
+                        is_runtime=False,
+                        append_extra=False,
                     )
                     tangents_start_idx = len(all_args) - len_tangents - len(rng_args)
                     tangents_end_idx = tangents_start_idx + len_tangents
