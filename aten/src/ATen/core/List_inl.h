@@ -9,15 +9,15 @@ template<class T> decltype(auto) getTypePtr();
 std::string toString(const Type& type);
 
 template<class T>
-List<T>::List(c10::intrusive_ptr<c10::detail::ListImpl>&& elements)
+TORCH_API List<T>::List(c10::intrusive_ptr<c10::detail::ListImpl>&& elements)
 : impl_(std::move(elements)) {}
 
 template<class T>
-List<T>::List(const c10::intrusive_ptr<c10::detail::ListImpl>& elements)
+TORCH_API List<T>::List(const c10::intrusive_ptr<c10::detail::ListImpl>& elements)
 : impl_(elements) {}
 
 template<class T>
-List<T>::List()
+TORCH_API List<T>::List()
 : List(make_intrusive<c10::detail::ListImpl>(
   typename c10::detail::ListImpl::list_type(),
   getTypePtr<T>())) {
@@ -25,7 +25,7 @@ List<T>::List()
 }
 
 template<class T>
-List<T>::List(ArrayRef<T> values)
+TORCH_API List<T>::List(ArrayRef<T> values)
 : List(make_intrusive<c10::detail::ListImpl>(
     typename c10::detail::ListImpl::list_type(),
     getTypePtr<T>())) {
@@ -37,13 +37,13 @@ List<T>::List(ArrayRef<T> values)
 }
 
 template<class T>
-List<T>::List(std::initializer_list<T> initial_values)
+TORCH_API List<T>::List(std::initializer_list<T> initial_values)
 : List(ArrayRef<T>(initial_values)) {
   static_assert(!std::is_same<T, IValue>::value, "This constructor is not valid for List<IValue>. Please use c10::impl::GenericList(elementType).");
 }
 
 template<class T>
-List<T>::List(TypePtr elementType)
+TORCH_API List<T>::List(TypePtr elementType)
 : List(make_intrusive<c10::detail::ListImpl>(
     typename c10::detail::ListImpl::list_type(),
     std::move(elementType))) {
@@ -79,7 +79,7 @@ impl::GenericList toList(const List<T>& list) {
 }
 
 template<class T>
-List<T> List<T>::copy() const {
+TORCH_API List<T> List<T>::copy() const {
   return List<T>(impl_->copy());
 }
 

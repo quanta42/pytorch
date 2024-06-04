@@ -6,13 +6,12 @@
 #include <c10/util/TypeList.h>
 #include <c10/util/intrusive_ptr.h>
 #include <c10/util/order_preserving_flat_hash_map.h>
-#include <c10/util/Optional.h>
 #include <ATen/core/TensorBody.h>
 #include <ATen/core/jit_type_base.h>
 
 namespace c10 {
 struct IValue;
-template<class Key, class Value> class Dict;
+template<class Key, class Value> class TORCH_API Dict;
 struct Type;
 
 namespace impl {
@@ -205,7 +204,7 @@ template<class Key, class Value> Dict<IValue, IValue> toGenericDict(Dict<Key, Va
  * for the kernel API.
  */
 template<class Key, class Value>
-class Dict final {
+class TORCH_API Dict final {
 private:
   static_assert((std::is_same_v<IValue, Key> && std::is_same_v<IValue, Value>) || guts::typelist::contains<impl::valid_dict_key_types, Key>::value, "Invalid Key type for Dict. We only support int64_t, double, bool, and string.");
 

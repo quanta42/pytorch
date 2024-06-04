@@ -8,7 +8,7 @@
 #include <c10/util/TypeList.h>
 #include <c10/util/intrusive_ptr.h>
 #include <c10/util/ArrayRef.h>
-#include <c10/util/Optional.h>
+#include <optional>
 #include <vector>
 
 namespace at {
@@ -16,7 +16,7 @@ class Tensor;
 }
 namespace c10 {
 struct IValue;
-template<class T> class List;
+template<class T> class TORCH_API List;
 struct Type;
 
 namespace detail {
@@ -234,7 +234,7 @@ const IValue* ptr_to_first_element(const List<IValue>& list);
  * breaking backwards compatibility for the kernel API.
  */
 template<class T>
-class List final {
+class TORCH_API List final {
 private:
   // This is an intrusive_ptr because List is a pointer type.
   // Invariant: This will never be a nullptr, there will always be a valid

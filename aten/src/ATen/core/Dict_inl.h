@@ -65,7 +65,7 @@ inline intrusive_ptr<DictImpl> DictImpl::copy() const {
 }
 
 template<class Key, class Value>
-Dict<Key, Value>::Dict()
+TORCH_API Dict<Key, Value>::Dict()
   :Dict(make_intrusive<detail::DictImpl>(
       detail::DictImpl::dict_map_type(),
       detail::DictImpl::DictElementTypes{getTypePtr<Key>(), getTypePtr<Value>()})) {
@@ -74,7 +74,7 @@ Dict<Key, Value>::Dict()
 }
 
 template<class Key, class Value>
-Dict<Key, Value>::Dict(TypePtr keyType, TypePtr valueType)
+TORCH_API Dict<Key, Value>::Dict(TypePtr keyType, TypePtr valueType)
 : Dict(make_intrusive<detail::DictImpl>(
     detail::DictImpl::dict_map_type(),
     detail::DictImpl::DictElementTypes {std::move(keyType), std::move(valueType)})) {
@@ -83,41 +83,41 @@ Dict<Key, Value>::Dict(TypePtr keyType, TypePtr valueType)
 }
 
 template<class Key, class Value>
-Dict<Key, Value>::Dict(c10::intrusive_ptr<detail::DictImpl>&& impl): impl_(std::move(impl)) {}
+TORCH_API Dict<Key, Value>::Dict(c10::intrusive_ptr<detail::DictImpl>&& impl): impl_(std::move(impl)) {}
 
 template<class Key, class Value>
-Dict<Key, Value> Dict<Key, Value>::copy() const {
+TORCH_API Dict<Key, Value> Dict<Key, Value>::copy() const {
   return Dict<Key, Value>(impl_->copy());
 }
 
 template<class Key, class Value>
-typename Dict<Key, Value>::iterator Dict<Key, Value>::begin() const {
+TORCH_API typename Dict<Key, Value>::iterator Dict<Key, Value>::begin() const {
   return iterator{impl_->dict.begin()};
 }
 
 template<class Key, class Value>
-typename Dict<Key, Value>::iterator Dict<Key, Value>::end() const {
+TORCH_API typename Dict<Key, Value>::iterator Dict<Key, Value>::end() const {
   return iterator{impl_->dict.end()};
 }
 
 template<class Key, class Value>
-bool Dict<Key, Value>::empty() const {
+TORCH_API bool Dict<Key, Value>::empty() const {
   return impl_->dict.empty();
 }
 
 template<class Key, class Value>
-typename Dict<Key, Value>::size_type Dict<Key, Value>::size() const {
+TORCH_API typename Dict<Key, Value>::size_type Dict<Key, Value>::size() const {
   return impl_->dict.size();
 }
 
 template<class Key, class Value>
-void Dict<Key, Value>::clear() const {
+TORCH_API void Dict<Key, Value>::clear() const {
   impl_->dict.clear();
 }
 
 template<class Key, class Value>
 template<class Key_, class Value_>
-std::pair<typename Dict<Key, Value>::iterator, bool> Dict<Key, Value>::insert(Key_&& key, Value_&& value) const {
+TORCH_API std::pair<typename Dict<Key, Value>::iterator, bool> Dict<Key, Value>::insert(Key_&& key, Value_&& value) const {
   static_assert(std::is_constructible<Key, Key_>::value, "Wrong type for the key argument of Dict::insert");
   static_assert(std::is_constructible<Value, Value_>::value, "Wrong type for the value argument of Dict::insert");
   auto inserted = impl_->dict.emplace(
@@ -128,7 +128,7 @@ std::pair<typename Dict<Key, Value>::iterator, bool> Dict<Key, Value>::insert(Ke
 
 template<class Key, class Value>
 template<class Key_, class Value_>
-std::pair<typename Dict<Key, Value>::iterator, bool> Dict<Key, Value>::insert_or_assign(Key_&& key, Value_&& value) const {
+TORCH_API std::pair<typename Dict<Key, Value>::iterator, bool> Dict<Key, Value>::insert_or_assign(Key_&& key, Value_&& value) const {
   static_assert(std::is_constructible<Key, Key_>::value, "Wrong type for the key argument of Dict::insert_or_assign");
   static_assert(std::is_constructible<Value, Value_>::value, "Wrong type for the value argument of Dict::insert_or_assign");
   auto inserted = impl_->dict.insert_or_assign(
@@ -138,51 +138,51 @@ std::pair<typename Dict<Key, Value>::iterator, bool> Dict<Key, Value>::insert_or
 }
 
 template<class Key, class Value>
-void Dict<Key, Value>::erase(iterator iter) const {
+TORCH_API void Dict<Key, Value>::erase(iterator iter) const {
   impl_->dict.erase(iter.entryRef_.iterator_);
 }
 
 template<class Key, class Value>
-C10_NODISCARD size_t Dict<Key, Value>::erase(const Key& key) const {
+C10_NODISCARD TORCH_API size_t Dict<Key, Value>::erase(const Key& key) const {
   return impl_->dict.erase(key);
 }
 
 template<class Key, class Value>
-Value Dict<Key, Value>::at(const Key& key) const {
+TORCH_API Value Dict<Key, Value>::at(const Key& key) const {
   return impl_->dict.at(key).template to<Value>();
 }
 
 template<class Key, class Value>
-typename Dict<Key, Value>::iterator Dict<Key, Value>::find(const Key& key) const {
+TORCH_API typename Dict<Key, Value>::iterator Dict<Key, Value>::find(const Key& key) const {
   return iterator{impl_->dict.find(key)};
 }
 
 template<class Key, class Value>
-bool Dict<Key, Value>::contains(const Key& key) const {
+TORCH_API bool Dict<Key, Value>::contains(const Key& key) const {
   return end() != find(key);
 }
 
 template<class Key, class Value>
-void Dict<Key, Value>::reserve(size_type count) const {
+TORCH_API void Dict<Key, Value>::reserve(size_type count) const {
   impl_->dict.reserve(count);
 }
 
 template<class Key, class Value>
-TypePtr Dict<Key, Value>::keyType() const {
+TORCH_API TypePtr Dict<Key, Value>::keyType() const {
   return impl_->elementTypes.keyType;
 }
 
 template<class Key, class Value>
-TypePtr Dict<Key, Value>::valueType() const {
+TORCH_API TypePtr Dict<Key, Value>::valueType() const {
   return impl_->elementTypes.valueType;
 }
 template <class Key, class Value>
-void Dict<Key, Value>::unsafeSetKeyType(TypePtr t) {
+TORCH_API void Dict<Key, Value>::unsafeSetKeyType(TypePtr t) {
   impl_->elementTypes.keyType = std::move(t);
 }
 
 template <class Key, class Value>
-void Dict<Key, Value>::unsafeSetValueType(TypePtr t) {
+TORCH_API void Dict<Key, Value>::unsafeSetValueType(TypePtr t) {
   impl_->elementTypes.valueType = std::move(t);
 }
 
@@ -203,7 +203,7 @@ bool operator!=(const Dict<Key_, Value_>& lhs, const Dict<Key_, Value_>& rhs) {
 }
 
 template <class Key, class Value>
-bool Dict<Key, Value>::is(const Dict& rhs) const {
+TORCH_API bool Dict<Key, Value>::is(const Dict& rhs) const {
   return this->impl_ == rhs.impl_;
 }
 }
