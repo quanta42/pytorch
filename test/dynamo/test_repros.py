@@ -5051,6 +5051,23 @@ def forward(self, primals_1, primals_2):
         opt_fn = torch.compile(fn, backend="eager")
         self.assertEqual(fn(x, y), opt_fn(x, y))
 
+    # https://github.com/pytorch/pytorch/issues/127970
+    @torch._inductor.config.patch(fx_graph_cache=True)
+    def test_inductor_codecache_subclass_input_inner_tensor_symint(self):
+        def gen_nt(r):
+            values = torch.randn(r, 16)
+            offsets = torch.tensor([0, 2, 3, 6, 13, r])
+            return torch.nested.nested_tensor_from_jagged(values, offsets)
+
+        def fn(nt):
+            if nt.values().size(0) % 16 == 0:
+                return nt.sin()
+            return nt.cos()
+
+        torch.compile(fn)(gen_nt(19))
+        # should not error
+        torch.compile(fn)(gen_nt(20))
+
 
 instantiate_parametrized_tests(ReproTests)
 
