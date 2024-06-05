@@ -16,6 +16,7 @@ from .. import config, variables
 from ..bytecode_transformation import create_call_function, create_instruction
 from ..exc import unimplemented
 from ..guards import GuardBuilder, install_guard
+from ..mutation_guard import unpatched_nn_module_init
 from ..source import AttrSource, GetItemSource, ODictGetItemSource, TypeSource
 from ..utils import (
     check_unspec_or_constant_args,
@@ -133,12 +134,9 @@ class SuperVariable(VariableTracker):
                 and isinstance(objvar.mutable_local, AttributeMutationNew)
                 and not (args or kwargs)
             ):
-                tx.output.side_effects.store_attr(
-                    objvar,
-                    "__call_nn_module_init",
-                    variables.ConstantVariable.create(True),
-                )
-                return variables.ConstantVariable.create(None)
+                return variables.UserFunctionVariable(
+                    unpatched_nn_module_init, source=source
+                ).call_function(tx, [self.objvar] + args, kwargs)
             else:
                 unimplemented("super() nn.Module.__init__")
         elif isinstance(inner_fn, types.FunctionType):
@@ -175,6 +173,19 @@ class SuperVariable(VariableTracker):
             self.objvar, UserDefinedObjectVariable
         ):
             return self.objvar.method_setattr_standard(tx, *args, **kwargs)
+        elif inner_fn is object.__delattr__:
+            attr = args[0]
+            try:
+                attr = attr.as_python_constant()
+            except NotImplementedError:
+                unimplemented(f"non-const delattr attr: {attr}")
+            if not tx.output.side_effects.is_attribute_mutation(self.objvar):
+                unimplemented(f"delattr({self.objvar}, {attr}, ...)")
+
+            tx.output.side_effects.store_attr(
+                self.objvar, attr, variables.DeletedVariable()
+            )
+            return variables.ConstantVariable(None)
 
         unimplemented(f"non-function or method super: {inner_fn}")
 
