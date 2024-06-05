@@ -8,8 +8,3 @@ leak:list_resize
 leak:python
 leak:pybind11::cpp_function
 leak:torch::tensors::initialize_aten_types
-leak:std::__cxx11::basic_string
-leak:^/usr/bin
-leak:^/usr/lib
-leak:^/lib
-leak:^/opt/cache
