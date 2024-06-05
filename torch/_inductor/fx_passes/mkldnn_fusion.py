@@ -947,10 +947,15 @@ if torch._C._has_mkldnn:
             torch.bfloat16,
             torch.float16,
         )
+        bf32_matmul_enabled = torch.backends.mkldnn.matmul.fp32_precision == "bf16"  # type: ignore[attr-defined]
+        use_bf16_for_fp32_weight = (
+            bf32_matmul_enabled and weight_meta_value.dtype == torch.float32
+        )
+        compute_with_lp = is_lp_weight or use_bf16_for_fp32_weight
         # on x86, for fp32, mkl should be enabled and batch_size should not be a free symbol.
         # on aarch64, use mkldnn op for fp32 as well if acl is enabled
         if (
-            not is_lp_weight
+            not compute_with_lp
             and not mkldnn._is_mkldnn_acl_supported()
             and ((not torch._C.has_mkl) or has_free_symbols(batch_size))
         ):
@@ -1148,10 +1153,17 @@ if torch._C._has_mkldnn:
                     torch.bfloat16,
                     torch.float16,
                 )
+                bf32_matmul_enabled = (
+                    torch.backends.mkldnn.matmul.fp32_precision == "bf16"  # type: ignore[attr-defined]
+                )
+                use_bf16_for_fp32_weight = (
+                    bf32_matmul_enabled and weight_dtype == torch.float32
+                )
+                compute_with_lp = is_lp_weight or use_bf16_for_fp32_weight
                 batch_size = input.meta.get("val").shape[0]
                 if has_free_symbols(batch_size):
                     assert (
-                        is_lp_weight or mkldnn._is_mkldnn_acl_supported()
+                        compute_with_lp or mkldnn._is_mkldnn_acl_supported()
                     ), f"only bf16/fp16 weight prepacking supports dynamic shape inputs but got {weight_dtype}"
                 # For bfloat16 dynamic shape path, using input size hint to pack weight for a better performance.
                 packed_weight_inputs = (
@@ -1168,7 +1180,7 @@ if torch._C._has_mkldnn:
                 packed_weight_op = (
                     mkldnn._reorder_linear_weight
                     if (
-                        is_lp_weight
+                        compute_with_lp
                         or mkldnn._is_mkldnn_acl_supported()
                         or V.aot_compilation is True
                     )
@@ -1180,7 +1192,7 @@ if torch._C._has_mkldnn:
 
                 packed_linear_inputs: Tuple[Any, ...] = (input, packed_weight_node)
                 if (
-                    is_lp_weight
+                    compute_with_lp
                     or mkldnn._is_mkldnn_acl_supported()
                     or V.aot_compilation is True
                 ):
