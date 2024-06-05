@@ -1114,7 +1114,19 @@ class TORCH_API ProcessGroupNCCL : public Backend {
   ProcessGroupStatus pgStatus_;
 };
 
-TORCH_API std::string dump_nccl_trace();
+// Dumps the NCCL comm traces and additional information about the Process
+// Group.
+TORCH_API std::string dump_nccl_trace(
+    bool includeCollectives,
+    bool includeStackTraces,
+    bool onlyActive);
+
+// Dumps the collective traces.
+TORCH_API std::string get_collective_trace(
+    bool includeStackTraces,
+    bool onlyActive);
+
+TORCH_API std::string get_nccl_comm_trace();
 
 // Gets a mutable reference to a global optional function.  Heartbeat Monitor
 // will use this function to dump traces, if available. Inside fbcode, we store

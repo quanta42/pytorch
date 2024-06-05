@@ -341,8 +341,14 @@ void cacheAllocatorDeregisterHook(
   }
 }
 
+std::string get_collective_trace(bool includeStackTraces, bool onlyActive) {
+  return NCCLTraceBuffer::get()->dump(
+      c10::nullopt, true, includeStackTraces, onlyActive);
+}
+
 #if defined(IS_NCCLX) && defined(NCCL_COMM_DUMP)
-std::string dump_nccl_trace() {
+std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
+get_nccl_dump_map() {
   std::unordered_map<
       std::string /* ncclUniqueID */,
       std::unordered_map<std::string, std::string> /* dump from this comm */>
@@ -362,19 +368,44 @@ std::string dump_nccl_trace() {
     std::string ncclUniqueIDStr = buildNcclUniqueIdStr(ncclComm->getNcclId());
     ncclDumpMap[ncclUniqueIDStr] = ncclComm->ncclCommDump();
   }
-  return NCCLTraceBuffer::get()->dump(ncclDumpMap);
+
+  return ncclDumpMap;
+}
+
+std::string dump_nccl_trace(
+    bool includeCollectives,
+    bool includeStackTraces,
+    bool onlyActive) {
+  auto ncclDumpMap = get_nccl_dump_map();
+  return NCCLTraceBuffer::get()->dump(
+      ncclDumpMap, includeCollectives, includeStackTraces, onlyActive);
+}
+
+std::string get_nccl_comm_trace() {
+  auto ncclDumpMap = get_nccl_dump_map();
+  return NCCLTraceBuffer::get()->dump(ncclDumpMap, false, false, false);
 }
 #else
-std::string dump_nccl_trace() {
-  return NCCLTraceBuffer::get()->dump(c10::nullopt);
+std::string dump_nccl_trace(
+    bool includeCollectives,
+    bool includeStackTraces,
+    bool onlyActive) {
+  return NCCLTraceBuffer::get()->dump(
+      c10::nullopt, includeCollectives, includeStackTraces, onlyActive);
+}
+
+std::string get_nccl_comm_trace() {
+  return NCCLTraceBuffer::get()->dump(c10::nullopt, false, false, false);
 }
 #endif
 
 // TODO(c-p-i-o): add a JSON endpoint.
 control_plane::RegisterHandler dumpHandler{
     "dump_nccl_trace_pickle",
-    [](const control_plane::Request&, control_plane::Response& res) {
-      res.setContent(dump_nccl_trace(), "application/octet-stream");
+    [](const control_plane::Request& req, control_plane::Response& res) {
+      // TODO: c-p-i-o: params from the request need to go to dump_nccl_trace.
+      res.setContent(
+          dump_nccl_trace(true, true, false), "application/octet-stream");
     }};
 
 std::optional<std::function<void(std::function<void(const std::string&)>)>>&
@@ -1197,7 +1228,7 @@ bool ProcessGroupNCCL::dumpDebuggingInfo() {
     // We dump nccl trace into local disk by default and users can register
     // their customized writer by inheriting `DebugInfoWriter` via
     // `registerDebugInfoWriter`.
-    auto ncclTrace = dump_nccl_trace();
+    auto ncclTrace = dump_nccl_trace(true, true, false);
     DebugInfoWriter& writer = DebugInfoWriter::getWriter(globalRank());
     LOG(INFO) << logPrefix() << "ProcessGroupNCCL dumping nccl trace to "
               << writer.getWriterTarget();
