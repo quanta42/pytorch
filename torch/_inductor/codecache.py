@@ -772,6 +772,7 @@ class FxGraphCache:
         assert shape_env is not None
 
         symints = FxGraphCache._filter_backed_symints(example_inputs)
+        shape_env.drop_non_input_symint_guards(symints)
         hints = [hint_int(s) for s in symints]
 
         def iterate_over_candidates() -> Generator[CompiledFxGraph, None, None]:
@@ -904,6 +905,7 @@ class FxGraphCache:
         shape_env = FxGraphCache._get_shape_env()
         assert shape_env is not None
         symints = FxGraphCache._filter_backed_symints(example_inputs)
+        shape_env.drop_non_input_symint_guards(symints)
         disk_compiled_graph.guards_expr = shape_env.produce_guards_expression(symints)
 
         try:

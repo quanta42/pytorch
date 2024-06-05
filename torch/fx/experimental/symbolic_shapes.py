@@ -4232,6 +4232,17 @@ class ShapeEnv:
             return self.evaluate_guards_expression(code, args)
         return True
 
+    def drop_non_input_symint_guards(self, symints):
+        """
+        Removes guards that refer to non input symints
+        """
+        symints = {str(s) for s in symints}
+        guards = []
+        for g in self.guards:
+            if all(str(s) in symints for s in g.expr.free_symbols):
+                guards.append(g)
+        self.guards = guards
+
     def bind_symbols(self, placeholders, args):
         """
         Given a paired list of placeholders (fake tensors with
