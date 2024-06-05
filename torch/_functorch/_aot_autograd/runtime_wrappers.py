@@ -1373,14 +1373,14 @@ class AOTDispatchAutograd:
 
     # See Note [Tangents must be contiguous, Part 2]
     @staticmethod
-    def coerce_runtime_tangent(x, metadata_tensor):
+    def coerce_runtime_tangent(x, metadata):
         if not isinstance(x, torch.Tensor):
             return x
         if not is_traceable_wrapper_subclass(x):
             return x
-        assert is_traceable_wrapper_subclass(metadata_tensor)
+        assert metadata is not None
+        (_, expected_tangent_metadata) = metadata
         _, runtime_tangent_metadata = x.__tensor_flatten__()  # type: ignore[attr-defined]
-        _, expected_tangent_metadata = metadata_tensor.__tensor_flatten__()
         if runtime_tangent_metadata == expected_tangent_metadata:
             return x
         if not hasattr(x, "__coerce_same_metadata_as_tangent__"):
@@ -1397,7 +1397,7 @@ shape: {str(x.shape)}
 To fix this, your tensor subclass must implement the dunder method __force_to_same_metadata__.
 """
             )
-        return x.__coerce_same_metadata_as_tangent__(metadata_tensor)  # type: ignore[attr-defined]
+        return x.__coerce_same_metadata_as_tangent__(expected_tangent_metadata)  # type: ignore[attr-defined]
 
     @staticmethod
     def post_compile(
