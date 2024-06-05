@@ -397,6 +397,7 @@ aliasing_ops_list_return = {
 
 skip_noncontig = {
     "_batch_norm_with_update",
+    "as_strided_copy",
 }
 
 
@@ -425,6 +426,7 @@ class TestOperators(TestCase):
                 xfail("_softmax_backward_data", device_type="cpu"),
                 xfail("as_strided"),
                 xfail("as_strided", "partial_views"),
+                xfail("as_strided_copy"),
                 # RuntimeError: !self.requires_grad() || self.is_contiguous()
                 xfail("as_strided_scatter"),
                 # RuntimeError: Tensor must have a last dimension with stride 1
@@ -575,6 +577,7 @@ class TestOperators(TestCase):
                 # AssertionError: Tensor-likes are not close!
                 xfail("as_strided"),
                 xfail("as_strided", "partial_views"),
+                xfail("as_strided_copy"),
                 xfail("as_strided_scatter"),
                 decorate(
                     "linalg.det",
@@ -734,6 +737,7 @@ class TestOperators(TestCase):
                 # BUG
                 # AssertionError: Tensor-likes are not close!
                 xfail("as_strided"),
+                xfail("as_strided_copy"),
                 xfail("as_strided_scatter"),
                 xfail("_softmax_backward_data", device_type="cpu"),
                 xfail("as_strided", "partial_views"),
@@ -912,6 +916,7 @@ class TestOperators(TestCase):
                 skip("ormqr"),  # Takes too long
                 xfail("as_strided"),  # incorrect output
                 xfail("as_strided", "partial_views"),  # incorrect output
+                xfail("as_strided_copy"),  # incorrect output
                 xfail("as_strided_scatter"),  # incorrect output
                 skip("bernoulli"),  # calls random op
                 xfail("bfloat16"),  # rank 4 tensor for channels_last
@@ -1146,6 +1151,7 @@ class TestOperators(TestCase):
             xfail("nn.functional.max_unpool2d", "grad"),
             xfail("sparse.sampled_addmm", ""),
             xfail("sparse.mm", "reduce"),
+            xfail("as_strided_copy", ""),  # calls as_strided
             xfail("as_strided_scatter", ""),  # calls as_strided
             xfail("index_reduce", "prod"),  # .item() call
             # ---------------------------------------------------------------------
@@ -1185,6 +1191,7 @@ class TestOperators(TestCase):
             {
                 xfail("as_strided"),
                 xfail("as_strided", "partial_views"),
+                xfail("as_strided_copy"),
             }
         ),
     )
@@ -1249,6 +1256,7 @@ class TestOperators(TestCase):
         xfail("quantile"),  # at::equal batching rule (cpu), also, in-place vmap (cuda)
         skip("as_strided"),  # Test runner cannot handle this
         # requires special handling, and does not yet have a batching rule. Feel free to file a github issue!
+        xfail("as_strided_copy"),
         xfail("as_strided_scatter"),
         xfail(
             "nn.functional.gaussian_nll_loss"
@@ -1886,6 +1894,7 @@ class TestOperators(TestCase):
                 xfail(
                     "as_strided", "partial_views"
                 ),  # AssertionError: Tensor-likes are not close!
+                xfail("as_strided_copy"),
                 xfail(
                     "as_strided_scatter"
                 ),  # AssertionError: Tensor-likes are not close!
