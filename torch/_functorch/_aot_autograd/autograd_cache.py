@@ -337,6 +337,7 @@ class AOTAutogradCacheEntry:
                 None,  # lazy_backward_info
                 aot_config,
                 fw_metadata=self.runtime_metadata,
+                try_save_cache_entry=None,
             )
         else:
             compiled_function = RuntimeWrapper(
