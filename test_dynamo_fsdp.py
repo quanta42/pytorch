@@ -402,8 +402,8 @@ def init(activation_checkpoint):
     elif test_case == "toy_transformer" or test_case == "toy_transformer_graph_break":
         model_args = ModelArgs(
             dim=hidden_dim,
-            n_layers=1,
-            n_heads=1,
+            n_layers=3,
+            n_heads=2,
             vocab_size=1024,
         )
         if test_case == "toy_transformer_graph_break":
@@ -507,7 +507,7 @@ def run(model, optim, n_iter, hidden_dim, use_compiled_autograd=False):
         #     backend = "eager"
         #     fullgraph = False
         # else:
-        #     backend = "inductor"
+        #     backend = "aot_eager"
         #     fullgraph = True
         torch_log.warning(f"Starting iteration: {i}")
         optim.zero_grad(set_to_none=True)
@@ -629,7 +629,7 @@ if __name__ == "__main__":
     if dist.get_rank() == 0:
         start_record_memory_history()
     ac_test_order = [False]
-    backends = ["inductor"]
+    backends = ["aot_eager"]
 
     def test_eager(activation_checkpoint):
         losses_eager = execute_and_profile(
