@@ -63,6 +63,7 @@ from torch._guards import ShapeGuard, Source, TracingContext
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 from torch.utils._sympy.functions import FloorDiv, Mod, PythonMod, IsNonOverlappingAndDenseIndicator, CleanDiv
 from torch.utils._sympy.solve import try_solve
+from torch.utils._sympy.numbers import int_oo
 from torch.utils._sympy.value_ranges import bound_sympy, SymPyValueRangeAnalysis, ValueRanges, ValueRangeError
 from torch.utils._sympy.singleton_int import SingletonInt
 from torch.utils._traceback import format_frame, CapturedTraceback
@@ -869,9 +870,9 @@ def constrain_range(a, *, min: Optional[int], max: Optional[int] = None):
     for N=1.
     """
     if min is None:
-        min = -sys.maxsize - 1
+        min = -int_oo
     if max is None:
-        max = sys.maxsize - 1
+        max = int_oo
 
     if max < min:
         raise ValueError(
@@ -1380,6 +1381,7 @@ SYMPY_INTERP = {
     'PythonMod': operator.mod,
     'FloorDiv': operator.floordiv,
     'TrueDiv': operator.truediv,
+    'PowByNatural': operator.pow,
     'IsNonOverlappingAndDenseIndicator': eval_is_non_overlapping_and_dense,
     'floor': math.floor,
     'ceiling': math.ceil,
@@ -1989,7 +1991,7 @@ class DimConstraints:
                 self._is_dim(dim)
                 and ("min" in c or "max" in c)
                 and (dim.min < 2 or dim.min == c.get("min", 2))  # let pass if min < 2
-                and dim.max == c.get("max", sys.maxsize - 1)
+                and dim.max == c.get("max", int_oo)
             )
 
         # 1) newly introduced roots
@@ -2012,7 +2014,7 @@ class DimConstraints:
                     modulus, remainder = sympy.polys.polytools.div(c["eq"], root)
                     c_min = c.get("min", 2)
                     min_ = math.ceil((c_min - remainder) / modulus)
-                    c_max = c.get("max", sys.maxsize - 1)
+                    c_max = c.get("max", int_oo)
                     max_ = math.floor((c_max - remainder) / modulus)
                     # create result & dim
                     results[str(root)] = {"min": min_, "max": max_}
@@ -2768,7 +2770,7 @@ class ShapeEnv:
         if min is None:
             min = 0
         if max is None:
-            max = sys.maxsize - 1
+            max = int_oo
 
         if max < min:
             raise ValueError(
@@ -4096,7 +4098,7 @@ class ShapeEnv:
 
             assert sources
             bounds = []
-            if r.lower != -sympy.oo:
+            if r.lower not in (-sympy.oo, -int_oo):
                 if any(is_dim(source) for source in sources):
                     self.dim_constraints.add(sympy.Ge(symbol, r.lower))
                 # Only print lower bound in simplified mode if it is not the
@@ -4104,14 +4106,7 @@ class ShapeEnv:
                 if not _simplified or r.lower != self._default_value_range().lower:
                     bounds.append(str(r.lower))
             bounds.append(source_ref(sources[0]))
-            # NB: This looks like an off-by-one error but it's not: the
-            # upper bound may be sys.maxsize - 1 because we intentionally
-            # exclude sys.maxsize from our bounds to deal with direct
-            # == INT_MAX guards, but it's still dumb to actually test it.
-            # Note that you can be off by a pretty large constant and it
-            # won't matter because sizes in practice will be no where near
-            # the 64-bit limit.
-            if r.upper != sympy.oo and r.upper < sys.maxsize - 1:
+            if r.upper not in (sympy.oo, int_oo):
                 if any(is_dim(source) for source in sources):
                     self.dim_constraints.add(sympy.Le(symbol, r.upper))
                 # nontrivial upper bound is always interesting
@@ -4123,9 +4118,8 @@ class ShapeEnv:
                 constraints = symbol_to_constraints[symbol]
                 for c in constraints:
                     if isinstance(c, StrictMinMaxConstraint):
-                        # NB: By default, we have a restrictive range
-                        # 2 <= s0 <= sys.maxsize - 1.  But export users generally
-                        # expect to be able to specify nice ranges like [0, oo]
+                        # TODO: With int_oo, I think this condition is a noop
+                        # now
                         if not (c.vr & self._default_value_range()).issubset(r):
                             source = sources[0]
 
@@ -4198,9 +4192,9 @@ class ShapeEnv:
             # Reason: '_maybe_evaluate_static' may eliminate guards based on the
             # refined value ranges.
             for sym, vr in self.var_to_range.items():
-                if vr.lower != -sympy.oo:
+                if vr.lower not in (-sympy.oo, -int_oo):
                     self._add_target_expr(sympy.Le(vr.lower, sym))
-                if vr.upper != sympy.oo:
+                if vr.upper not in (sympy.oo, int_oo):
                     self._add_target_expr(sympy.Le(sym, vr.upper))
 
             # Before validating, populate the input of the validator with the
@@ -4307,9 +4301,14 @@ class ShapeEnv:
         var_to_range = {x: self.var_to_range.get(x, None) for x in expr.free_symbols}
         if size_oblivious:
             # Clamp values of size-like variables
+            # NB: discarding the old upper bound in intentional, per
+            # https://github.com/pytorch/pytorch/pull/123675
             for x in self.size_like & var_to_range.keys():
                 if var_to_range[x] is not None:
-                    var_to_range[x] = ValueRanges(2, sys.maxsize - 1)
+                    # NB: do NOT set upper to 2 ** 48, we're using this solely
+                    # to determine if we can do size-like replacement, the
+                    # upper bound is irrelevant here
+                    var_to_range[x] = ValueRanges(2, int_oo)
                     assert var_to_range[x].is_int
         return bound_sympy(expr, var_to_range)
 
@@ -4427,18 +4426,19 @@ class ShapeEnv:
                 vr = self._default_unspecified_value_range()
             if size_oblivious and k in self.size_like:
                 lower = max(2, vr.lower)
+                upper = min(2 ** 48, vr.upper)
                 # This is a bit dodgy: what this means is that there was a
                 # size-like unbacked symbol whose upper bound < 2.  This
                 # causes... problems.
-                if lower <= vr.upper:
-                    vr = ValueRanges(lower, vr.upper)
+                if lower <= upper:
+                    vr = ValueRanges(lower, upper)
             else:
                 lower = vr.lower
             # Don't do anything if we don't have a nontrivial lower bound
             # Also don't do anything if we asked only to simplify unbacked
             # SymInt
             if (
-                lower < (-sys.maxsize - 1) // 2 or
+                lower is -int_oo or
                 (unbacked_only and k in self.var_to_val) or
                 not vr.is_int
             ):
@@ -4688,20 +4688,8 @@ class ShapeEnv:
         if a in self.var_to_range:
             src_bound = self.var_to_range[a]
 
-            # If you have x in [2, maxint], then 2*x in [4, 2*maxint].
-            # But we don't really care that the max bound says we can
-            # go beyond the maximum integer size, because we aren't
-            # using bigints anyway.  Arguably, ValueRanges should know
-            # to do this truncation automaticaly (to avoid doing
-            # bigint compute in range analysis), but right now it doesn't
-            # so we need to get rid of some unnecessary precision.
-            int_range = ValueRanges(-sys.maxsize - 1, sys.maxsize - 1)
-
             def issubset(x, y):
-                if x.is_int and y.is_int:
-                    return (x & int_range).issubset(y & int_range)
-                else:
-                    return x.issubset(y)
+                return x.issubset(y)
 
             # First, refine the value range of a based on the computed value range
             # of tgt.  This is always OK to do, even if we decide not to do the
@@ -4852,6 +4840,7 @@ class ShapeEnv:
             has_only_ephemeral_sources = (
                 x in self.var_to_sources and all(s.is_ephemeral() for s in self.var_to_sources[x])
             )
+            # NB: size_hint is int, not sympy.Expr, do not use int_oo here
             size = self.size_hint(x, allow_none=True) or sys.maxsize
             name = x.name
             # 1 puts ephemeral sourced symbols first when sorting in reverse
@@ -4948,15 +4937,12 @@ class ShapeEnv:
         return
 
     # See: Note - On 0/1 specialization
-    # NB: sys.maxsize is NOT allowed for sizes, because we use MAX_INT
-    # as a sentinel sometimes.  Your sizevar isn't going to be
-    # anywhere near the max 64-bit integer anyway.
     def _default_value_range(self) -> ValueRanges:
         lower = 2 if self.specialize_zero_one else 0
-        return ValueRanges(lower, sys.maxsize - 1)
+        return ValueRanges(lower, int_oo)
 
     def _default_unspecified_value_range(self) -> ValueRanges:
-        return ValueRanges(-sys.maxsize - 1, sys.maxsize)
+        return ValueRanges(-int_oo, int_oo)
 
     @_lru_cache
     def _simplify_floor_div(self, expr):
